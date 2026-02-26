@@ -139,6 +139,15 @@
       font-weight: 600;
       color: var(--accent);
     }
+    .log-area {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-align: left;
+      margin-top: 8px;
+      max-height: 80px;
+      overflow-y: auto;
+      line-height: 1.3;
+    }
     .status {
       font-size: 0.9rem;
       margin-top: 12px;
@@ -162,7 +171,7 @@
 
     <div class="card">
       <button type="button" class="btn btn-primary" id="btnConnect">SZUKAJ STEROWNIKA</button>
-      <button type="button" class="btn btn-secondary" id="btnReset" style="display:none;">ZRESETUJ POŁĄCZENIE USB</button>
+      <button type="button" class="btn btn-secondary" id="btnReset" style="display:none;">ROZŁĄCZ / RESET</button>
       <div class="zadig-hint" id="zadigHint">Nie widzisz sterownika? Użyj Zadig (WinUSB).</div>
       <button type="button" class="btn btn-secondary" id="btnFile">WYBIERZ FIRMWARE .BIN</button>
       <div class="file-name" id="fileName">Nie wybrano pliku</div>
@@ -171,6 +180,7 @@
       <div class="progress-wrap" id="progressWrap">
         <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
         <div class="progress-pct" id="progressPct">0%</div>
+        <div class="log-area" id="logArea"></div>
       </div>
       <div class="status" id="status"></div>
     </div>
@@ -202,7 +212,17 @@
       const progressWrap = document.getElementById('progressWrap');
       const progressFill = document.getElementById('progressFill');
       const progressPct = document.getElementById('progressPct');
+      const logArea = document.getElementById('logArea');
       const statusEl = document.getElementById('status');
+
+      function logMsg(msg) {
+        if (!logArea) return;
+        var line = document.createElement('div');
+        line.textContent = msg;
+        logArea.appendChild(line);
+        logArea.scrollTop = logArea.scrollHeight;
+        console.log(msg);
+      }
 
       function setStatus(msg, type) {
         statusEl.textContent = msg || '';
@@ -276,15 +296,48 @@
         speechSynthesis.speak(u);
       }
 
+      var TRANSFER_SIZE = 1024;
+
+      async function ensureDfuIdle() {
+        var maxTries = 20;
+        for (var i = 0; i < maxTries; i++) {
+          var st = await dfuDevice.getStatus();
+          if (st.state === dfu.dfuIDLE) return;
+          if (st.state === dfu.dfuERROR) {
+            logMsg('Stan dfuERROR — wywołuję clearStatus()...');
+            await dfuDevice.clearStatus();
+            await new Promise(function(r) { setTimeout(r, 50); });
+          } else {
+            await new Promise(function(r) { setTimeout(r, st.pollTimeout || 50); });
+          }
+        }
+        throw new Error('Urządzenie nie weszło w stan dfuIDLE');
+      }
+
+      async function stm32DfuErase(address, fileSize) {
+        var setAddr = new ArrayBuffer(5);
+        var va = new DataView(setAddr);
+        va.setUint8(0, 0x21);
+        va.setUint32(1, address, true);
+        await dfuDevice.download(setAddr, 0);
+        await dfuDevice.poll_until_idle(dfu.dfuDNLOAD_IDLE);
+        var eraseCmd = new ArrayBuffer(2);
+        new DataView(eraseCmd).setUint8(0, 0x41);
+        new DataView(eraseCmd).setUint8(1, 0xFF);
+        await dfuDevice.download(eraseCmd, 1);
+        await dfuDevice.poll_until_idle(dfu.dfuDNLOAD_IDLE);
+      }
+
       async function doUpdate() {
         if (!dfuDevice || !firmwareBuffer) return;
         btnFile.disabled = true;
         btnUpdate.disabled = true;
         btnReset.disabled = true;
         progressWrap.classList.add('visible');
+        logArea.innerHTML = '';
         progressFill.classList.remove('progress-success');
         setProgress(0);
-        setStatus('Zapis firmware...', 'info');
+        setStatus('Przygotowanie...', 'info');
 
         var timedOut = false;
         var progressTimeoutId = setTimeout(function() {
@@ -292,6 +345,7 @@
           if (w < 1) {
             timedOut = true;
             setStatus('BŁĄD: Sterownik nie odpowiada. Sprawdź tryb BOOT i kabel!', 'error');
+            logMsg('Timeout 5s — brak postępu.');
             progressWrap.classList.remove('visible');
             btnReset.disabled = false;
             try { if (dfuDevice) dfuDevice.close(); } catch (_) {}
@@ -311,25 +365,33 @@
         };
 
         try {
-          if (typeof dfuDevice.clearStatus === 'function') {
-            await dfuDevice.clearStatus();
-          }
-          await new Promise(function(r) { setTimeout(r, 100); });
-        } catch (_) {}
+          logMsg('Sprawdzanie stanu DFU...');
+          await ensureDfuIdle();
+          logMsg('Stan dfuIDLE.');
 
-        try {
-          const xferSize = DFU_TRANSFER_SIZE;
+          logMsg('Czyszczenie pamięci...');
+          try {
+            await stm32DfuErase(START_ADDRESS, firmwareBuffer.byteLength);
+            await new Promise(function(r) { setTimeout(r, 100); });
+          } catch (eraseErr) {
+            logMsg('Uwaga: erase nie wykonany — ' + (eraseErr.message || eraseErr));
+          }
+
+          logMsg('Wgrywanie...');
+          setStatus('Zapis firmware...', 'info');
           await new Promise(function(r) { setTimeout(r, 100); });
-          await dfuDevice.do_download(xferSize, firmwareBuffer, true);
+          await dfuDevice.do_download(TRANSFER_SIZE, firmwareBuffer, true);
           clearTimeout(progressTimeoutId);
           setProgress(100);
           progressFill.classList.add('progress-success');
+          logMsg('Zapis zakończony.');
           setStatus('Aktualizacja zakończona pomyślnie.', 'success');
           speakSuccess();
         } catch (e) {
           clearTimeout(progressTimeoutId);
           var msg = (e && e.message) ? e.message : String(e);
           if (e && e.cause && e.cause.message) msg += ' — ' + e.cause.message;
+          logMsg('Błąd: ' + msg);
           setStatus('BŁĄD ZAPISU: ' + msg, 'error');
         }
 

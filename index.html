@@ -313,10 +313,8 @@
         try {
           if (typeof dfuDevice.clearStatus === 'function') {
             await dfuDevice.clearStatus();
-          } else if (typeof dfuDevice.detach === 'function') {
-            await dfuDevice.detach();
+            await new Promise(function(r) { setTimeout(r, 200); });
           }
-          await new Promise(function(r) { setTimeout(r, 300); });
         } catch (_) {}
 
         try {

@@ -86,6 +86,27 @@
       opacity: 0.5;
       cursor: not-allowed;
     }
+    .btn-connected {
+      background: var(--success);
+      color: #000;
+      cursor: default;
+    }
+    .btn-connected:hover { background: var(--success); }
+    .zadig-hint {
+      display: none;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 8px;
+      margin-bottom: 4px;
+    }
+    .zadig-hint.visible { display: block; }
+    .file-input-hidden {
+      position: absolute;
+      width: 0;
+      height: 0;
+      opacity: 0;
+      pointer-events: none;
+    }
     .file-name {
       font-size: 0.85rem;
       color: var(--text-muted);
@@ -137,7 +158,8 @@
     <div class="tagline">Cloud Flasher — aktualizacja w przeglądarce</div>
 
     <div class="card">
-      <button type="button" class="btn btn-primary" id="btnConnect">POŁĄCZ ZE STEROWNIKIEM</button>
+      <button type="button" class="btn btn-primary" id="btnConnect">SZUKAJ STEROWNIKA</button>
+      <div class="zadig-hint" id="zadigHint">Nie widzisz sterownika? Użyj Zadig (WinUSB).</div>
       <button type="button" class="btn btn-secondary" id="btnFile">WYBIERZ FIRMWARE .BIN</button>
       <div class="file-name" id="fileName">Nie wybrano pliku</div>
       <button type="button" class="btn btn-primary" id="btnUpdate" disabled>AKTUALIZUJ SYSTEM</button>
@@ -150,7 +172,7 @@
     </div>
 
     <div class="hint">
-      Wymagana przeglądarka Chrome (PC lub Android). Sterownik w trybie DFU: VID 0483, PID DF11.
+      Wymagana przeglądarka Chrome (PC lub Android). Strona musi być otwarta przez HTTPS. Sterownik w trybie DFU: VID 0483, PID DF11. Adres zapisu: 0x08000000.
     </div>
   </div>
 
@@ -168,6 +190,7 @@
       let firmwareBuffer = null;
 
       const btnConnect = document.getElementById('btnConnect');
+      const zadigHint = document.getElementById('zadigHint');
       const btnFile = document.getElementById('btnFile');
       const btnUpdate = document.getElementById('btnUpdate');
       const fileName = document.getElementById('fileName');
@@ -191,61 +214,41 @@
         btnUpdate.disabled = !(dfuDevice && firmwareBuffer);
       }
 
-      async function connect() {
-        if (!navigator.usb) {
-          setStatus('WebUSB nie jest obsługiwane. Użyj Chrome.', 'error');
-          return;
+      function setConnected(connected) {
+        if (connected) {
+          btnConnect.textContent = 'POŁĄCZONO';
+          btnConnect.classList.remove('btn-primary');
+          btnConnect.classList.add('btn-connected');
+          btnConnect.disabled = true;
+          zadigHint.classList.remove('visible');
+        } else {
+          btnConnect.textContent = 'SZUKAJ STEROWNIKA';
+          btnConnect.classList.add('btn-primary');
+          btnConnect.classList.remove('btn-connected');
+          btnConnect.disabled = false;
         }
-        setStatus('Szukam urządzenia DFU...', 'info');
-        progressWrap.classList.remove('visible');
-        try {
-          usbDevice = await navigator.usb.requestDevice({
-            filters: [{ vendorId: VID, productId: PID }]
-          });
-        } catch (e) {
-          if (e.name === 'NotFoundError') {
-            setStatus('Nie wykryto urządzenia. Podłącz sterownik w trybie DFU.', 'error');
-          } else {
-            setStatus('Błąd: ' + (e.message || e), 'error');
-          }
-          usbDevice = null;
-          dfuDevice = null;
-          setUpdateEnabled();
-          return;
-        }
-        try {
-          const interfaces = dfu.findDeviceDfuInterfaces(usbDevice);
-          if (!interfaces.length) {
-            setStatus('Urządzenie nie ma interfejsu DFU.', 'error');
-            await usbDevice.close();
-            usbDevice = null;
-            dfuDevice = null;
-            setUpdateEnabled();
-            return;
-          }
-          dfuDevice = new dfu.Device(usbDevice, interfaces[0]);
-          await dfuDevice.open();
-          setStatus('Połączono ze sterownikiem.', 'success');
-        } catch (e) {
-          setStatus('Błąd połączenia: ' + (e.message || e), 'error');
-          dfuDevice = null;
-          if (usbDevice) try { await usbDevice.close(); } catch (_) {}
-          usbDevice = null;
-        }
-        setUpdateEnabled();
+      }
+
+      function formatSize(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
       }
 
       function onFileSelected(e) {
         const f = e.target.files && e.target.files[0];
         if (!f) return;
         if (!f.name.toLowerCase().endsWith('.bin')) {
-          setStatus('Wybierz plik .BIN', 'error');
+          setStatus('BŁĄD: Wybierz poprawny plik binarny (.bin)', 'error');
+          firmwareBuffer = null;
+          fileName.textContent = 'Nie wybrano pliku';
+          setUpdateEnabled();
           return;
         }
         const r = new FileReader();
         r.onload = function() {
           firmwareBuffer = r.result;
-          fileName.textContent = f.name;
+          fileName.textContent = f.name + ' (' + formatSize(f.size) + ')';
           setStatus('');
           setUpdateEnabled();
         };
@@ -257,16 +260,17 @@
         const u = new SpeechSynthesisUtterance('Velkinex system update successful');
         u.lang = 'en-US';
         u.rate = 0.9;
-        const voices = speechSynthesis.getVoices().filter(function(v) {
-          return v.name.indexOf('Female') !== -1 || v.lang.startsWith('en');
+        const voices = speechSynthesis.getVoices();
+        const female = voices.find(function(v) {
+          return /female/i.test(v.name) || (v.lang.startsWith('en') && /woman|female|samantha|karen/i.test(v.name));
         });
-        if (voices.length) u.voice = voices[0];
+        const en = voices.find(function(v) { return v.lang.startsWith('en'); });
+        u.voice = female || en || voices[0];
         speechSynthesis.speak(u);
       }
 
       async function doUpdate() {
         if (!dfuDevice || !firmwareBuffer) return;
-        btnConnect.disabled = true;
         btnFile.disabled = true;
         btnUpdate.disabled = true;
         progressWrap.classList.add('visible');
@@ -291,25 +295,63 @@
         try { await dfuDevice.close(); } catch (_) {}
         dfuDevice = null;
         usbDevice = null;
-        btnConnect.disabled = false;
+        setConnected(false);
         btnFile.disabled = false;
         setUpdateEnabled();
       }
 
-      btnConnect.addEventListener('click', connect);
-      btnFile.addEventListener('click', function() { document.getElementById('fileInput').click(); });
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = '.bin';
-      input.id = 'fileInput';
-      input.style.display = 'none';
-      document.body.appendChild(input);
-      input.addEventListener('change', onFileSelected);
+      btnConnect.addEventListener('click', function() {
+        if (!navigator.usb) {
+          setStatus('WebUSB nie jest obsługiwane. Użyj Chrome.', 'error');
+          return;
+        }
+        zadigHint.classList.remove('visible');
+        setStatus('');
+        navigator.usb.requestDevice({ filters: [{ vendorId: VID, productId: PID }] })
+          .then(function(device) {
+            usbDevice = device;
+            var interfaces = dfu.findDeviceDfuInterfaces(usbDevice);
+            if (!interfaces.length) throw new Error('Urządzenie nie ma interfejsu DFU.');
+            dfuDevice = new dfu.Device(usbDevice, interfaces[0]);
+            return dfuDevice.open();
+          })
+          .then(function() {
+            setStatus('Połączono ze sterownikiem.', 'success');
+            setConnected(true);
+            setUpdateEnabled();
+          })
+          .catch(function(e) {
+            if (usbDevice) { usbDevice.close().catch(function() {}); }
+            usbDevice = null;
+            dfuDevice = null;
+            if (e.name === 'NotFoundError') {
+              setStatus('Nie wykryto urządzenia lub anulowano.', 'error');
+              zadigHint.classList.add('visible');
+            } else {
+              setStatus((e.message || e) + '', 'error');
+              zadigHint.classList.add('visible');
+            }
+            setConnected(false);
+            setUpdateEnabled();
+          });
+      });
+
+      btnFile.addEventListener('click', function() { fileInput.click(); });
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = '.bin';
+      fileInput.setAttribute('aria-hidden', 'true');
+      fileInput.tabIndex = -1;
+      fileInput.className = 'file-input-hidden';
+      document.body.appendChild(fileInput);
+      fileInput.addEventListener('change', onFileSelected);
 
       btnUpdate.addEventListener('click', doUpdate);
 
       if (!navigator.usb) {
         setStatus('WebUSB nie jest dostępne. Użyj Chrome (PC lub Android).', 'error');
+      } else if (!window.isSecureContext) {
+        setStatus('Strona musi być serwowana przez HTTPS (lub localhost).', 'error');
       }
     })();
   </script>

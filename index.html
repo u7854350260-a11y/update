@@ -113,6 +113,27 @@
       margin-top: 4px;
       word-break: break-all;
     }
+    .file-loading {
+      display: none;
+      font-size: 0.8rem;
+      color: var(--accent);
+      margin-top: 8px;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .file-loading.visible { display: flex; }
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
     .progress-wrap {
       display: none;
       margin-top: 16px;
@@ -174,6 +195,7 @@
       <button type="button" class="btn btn-secondary" id="btnReset" style="display:none;">ROZŁĄCZ / RESET</button>
       <div class="zadig-hint" id="zadigHint">Nie widzisz sterownika? Użyj Zadig (WinUSB).</div>
       <button type="button" class="btn btn-secondary" id="btnFile">WYBIERZ FIRMWARE .BIN</button>
+      <div class="file-loading" id="fileLoading"><span class="spinner"></span> Pobieram firmware z lokalizacji zewnętrznej...</div>
       <div class="file-name" id="fileName">Nie wybrano pliku</div>
       <button type="button" class="btn btn-primary" id="btnUpdate" disabled>AKTUALIZUJ SYSTEM</button>
 
@@ -209,6 +231,7 @@
       const btnFile = document.getElementById('btnFile');
       const btnUpdate = document.getElementById('btnUpdate');
       const fileName = document.getElementById('fileName');
+      const fileLoading = document.getElementById('fileLoading');
       const progressWrap = document.getElementById('progressWrap');
       const progressFill = document.getElementById('progressFill');
       const progressPct = document.getElementById('progressPct');
@@ -236,7 +259,23 @@
       }
 
       function setUpdateEnabled() {
-        btnUpdate.disabled = !(dfuDevice && firmwareBuffer);
+        var ready = !!(dfuDevice && firmwareBuffer);
+        btnUpdate.disabled = !ready;
+      }
+
+      function readFileAsArrayBuffer(file) {
+        return new Promise(function(resolve, reject) {
+          if (!file) {
+            reject(new Error('Brak pliku'));
+            return;
+          }
+          var r = new FileReader();
+          r.onload = function() { resolve(r.result); };
+          r.onerror = function() {
+            reject(new Error('Nie można pobrać pliku. Sprawdź połączenie z internetem lub uprawnienia.'));
+          };
+          r.readAsArrayBuffer(file);
+        });
       }
 
       function setConnected(connected) {
@@ -263,23 +302,36 @@
       }
 
       function onFileSelected(e) {
-        const f = e.target.files && e.target.files[0];
+        var f = e.target.files && e.target.files[0];
         if (!f) return;
         if (!f.name.toLowerCase().endsWith('.bin')) {
           setStatus('BŁĄD: Wybierz poprawny plik binarny (.bin)', 'error');
           firmwareBuffer = null;
+          fileLoading.classList.remove('visible');
           fileName.textContent = 'Nie wybrano pliku';
           setUpdateEnabled();
           return;
         }
-        const r = new FileReader();
-        r.onload = function() {
-          firmwareBuffer = r.result;
-          fileName.textContent = f.name + ' (' + formatSize(f.size) + ')';
-          setStatus('');
-          setUpdateEnabled();
-        };
-        r.readAsArrayBuffer(f);
+        firmwareBuffer = null;
+        setUpdateEnabled();
+        fileName.textContent = f.name + ' — wczytywanie...';
+        fileLoading.classList.add('visible');
+        setStatus('');
+        readFileAsArrayBuffer(f)
+          .then(function(buffer) {
+            firmwareBuffer = buffer;
+            fileName.textContent = f.name + ' (' + formatSize(f.size) + ')';
+            fileLoading.classList.remove('visible');
+            setStatus('');
+            setUpdateEnabled();
+          })
+          .catch(function(err) {
+            fileLoading.classList.remove('visible');
+            firmwareBuffer = null;
+            fileName.textContent = 'Nie wybrano pliku';
+            setStatus('BŁĄD: Nie można pobrać pliku. Sprawdź połączenie z internetem lub uprawnienia.', 'error');
+            setUpdateEnabled();
+          });
       }
 
       function speakSuccess() {
@@ -390,9 +442,18 @@
         } catch (e) {
           clearTimeout(progressTimeoutId);
           var msg = (e && e.message) ? e.message : String(e);
-          if (e && e.cause && e.cause.message) msg += ' — ' + e.cause.message;
-          logMsg('Błąd: ' + msg);
-          setStatus('BŁĄD ZAPISU: ' + msg, 'error');
+          var at100 = parseFloat(progressFill.style.width) >= 99;
+          var isResetError = /NetworkError|device.*disconnect|Unable to reset|NotFoundError.*device/i.test(msg) || (e && e.name === 'NetworkError');
+          if (at100 && isResetError) {
+            progressFill.classList.add('progress-success');
+            setStatus('Aktualizacja zakończona pomyślnie. (Urządzenie zresetowane.)', 'success');
+            logMsg('Zapis OK — reset STM32.');
+            speakSuccess();
+          } else {
+            if (e && e.cause && e.cause.message) msg += ' — ' + e.cause.message;
+            logMsg('Błąd: ' + msg);
+            setStatus('BŁĄD ZAPISU: ' + msg, 'error');
+          }
         }
 
         if (timedOut) return;

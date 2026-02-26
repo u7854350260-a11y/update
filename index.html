@@ -131,6 +131,9 @@
       background: var(--accent);
       transition: width 0.2s;
     }
+    .progress-fill.progress-success {
+      background: var(--success);
+    }
     .progress-pct {
       font-size: 0.9rem;
       font-weight: 600;
@@ -159,6 +162,7 @@
 
     <div class="card">
       <button type="button" class="btn btn-primary" id="btnConnect">SZUKAJ STEROWNIKA</button>
+      <button type="button" class="btn btn-secondary" id="btnReset" style="display:none;">RESET POŁĄCZENIA</button>
       <div class="zadig-hint" id="zadigHint">Nie widzisz sterownika? Użyj Zadig (WinUSB).</div>
       <button type="button" class="btn btn-secondary" id="btnFile">WYBIERZ FIRMWARE .BIN</button>
       <div class="file-name" id="fileName">Nie wybrano pliku</div>
@@ -190,6 +194,7 @@
       let firmwareBuffer = null;
 
       const btnConnect = document.getElementById('btnConnect');
+      const btnReset = document.getElementById('btnReset');
       const zadigHint = document.getElementById('zadigHint');
       const btnFile = document.getElementById('btnFile');
       const btnUpdate = document.getElementById('btnUpdate');
@@ -220,12 +225,14 @@
           btnConnect.classList.remove('btn-primary');
           btnConnect.classList.add('btn-connected');
           btnConnect.disabled = true;
+          btnReset.style.display = 'block';
           zadigHint.classList.remove('visible');
         } else {
           btnConnect.textContent = 'SZUKAJ STEROWNIKA';
           btnConnect.classList.add('btn-primary');
           btnConnect.classList.remove('btn-connected');
           btnConnect.disabled = false;
+          btnReset.style.display = 'none';
         }
       }
 
@@ -273,30 +280,66 @@
         if (!dfuDevice || !firmwareBuffer) return;
         btnFile.disabled = true;
         btnUpdate.disabled = true;
+        btnReset.disabled = true;
         progressWrap.classList.add('visible');
+        progressFill.classList.remove('progress-success');
         setProgress(0);
         setStatus('Zapis firmware...', 'info');
 
+        var timedOut = false;
+        var progressTimeoutId = setTimeout(function() {
+          var w = parseFloat(progressFill.style.width) || 0;
+          if (w < 1) {
+            timedOut = true;
+            setStatus('BŁĄD: Sterownik nie odpowiada. Sprawdź tryb BOOT i kabel!', 'error');
+            progressWrap.classList.remove('visible');
+            btnReset.disabled = false;
+            try { if (dfuDevice) dfuDevice.close(); } catch (_) {}
+            dfuDevice = null;
+            usbDevice = null;
+            setConnected(false);
+            btnFile.disabled = false;
+            setUpdateEnabled();
+          }
+        }, 5000);
+
         dfuDevice.logProgress = function(done, total) {
-          if (total > 0) setProgress((100 * done) / total);
+          if (total > 0) {
+            clearTimeout(progressTimeoutId);
+            setProgress((100 * done) / total);
+          }
         };
+
+        try {
+          if (typeof dfuDevice.clearStatus === 'function') {
+            await dfuDevice.clearStatus();
+          } else if (typeof dfuDevice.detach === 'function') {
+            await dfuDevice.detach();
+          }
+          await new Promise(function(r) { setTimeout(r, 300); });
+        } catch (_) {}
 
         try {
           const xferSize = DFU_TRANSFER_SIZE;
           await dfuDevice.do_download(xferSize, firmwareBuffer, true);
+          clearTimeout(progressTimeoutId);
           setProgress(100);
+          progressFill.classList.add('progress-success');
           setStatus('Aktualizacja zakończona pomyślnie.', 'success');
           speakSuccess();
         } catch (e) {
+          clearTimeout(progressTimeoutId);
           const msg = (e && e.message) ? e.message : String(e);
           setStatus('Błąd zapisu: ' + msg, 'error');
         }
 
+        if (timedOut) return;
         try { await dfuDevice.close(); } catch (_) {}
         dfuDevice = null;
         usbDevice = null;
         setConnected(false);
         btnFile.disabled = false;
+        btnReset.disabled = false;
         setUpdateEnabled();
       }
 
@@ -334,6 +377,27 @@
             setConnected(false);
             setUpdateEnabled();
           });
+      });
+
+      btnReset.addEventListener('click', function() {
+        function closeAndReset() {
+          var p = Promise.resolve();
+          if (dfuDevice) {
+            p = p.then(function() { return dfuDevice.close().catch(function() {}); });
+            dfuDevice = null;
+          }
+          if (usbDevice) {
+            p = p.then(function() { return usbDevice.close().catch(function() {}); });
+            usbDevice = null;
+          }
+          p.then(function() {
+            setConnected(false);
+            setUpdateEnabled();
+            setStatus('Połączenie zresetowane. Kliknij SZUKAJ STEROWNIKA.', 'info');
+            btnReset.style.display = 'none';
+          });
+        }
+        closeAndReset();
       });
 
       btnFile.addEventListener('click', function() { fileInput.click(); });

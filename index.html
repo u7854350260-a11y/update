@@ -162,7 +162,7 @@
 
     <div class="card">
       <button type="button" class="btn btn-primary" id="btnConnect">SZUKAJ STEROWNIKA</button>
-      <button type="button" class="btn btn-secondary" id="btnReset" style="display:none;">RESET POŁĄCZENIA</button>
+      <button type="button" class="btn btn-secondary" id="btnReset" style="display:none;">ZRESETUJ POŁĄCZENIE USB</button>
       <div class="zadig-hint" id="zadigHint">Nie widzisz sterownika? Użyj Zadig (WinUSB).</div>
       <button type="button" class="btn btn-secondary" id="btnFile">WYBIERZ FIRMWARE .BIN</button>
       <div class="file-name" id="fileName">Nie wybrano pliku</div>
@@ -186,7 +186,7 @@
 
       const VID = 0x0483;
       const PID = 0xDF11;
-      const DFU_TRANSFER_SIZE = 2048;
+      const DFU_TRANSFER_SIZE = 1024;
       const START_ADDRESS = 0x08000000;
 
       let usbDevice = null;
@@ -313,12 +313,13 @@
         try {
           if (typeof dfuDevice.clearStatus === 'function') {
             await dfuDevice.clearStatus();
-            await new Promise(function(r) { setTimeout(r, 200); });
           }
+          await new Promise(function(r) { setTimeout(r, 100); });
         } catch (_) {}
 
         try {
           const xferSize = DFU_TRANSFER_SIZE;
+          await new Promise(function(r) { setTimeout(r, 100); });
           await dfuDevice.do_download(xferSize, firmwareBuffer, true);
           clearTimeout(progressTimeoutId);
           setProgress(100);
@@ -327,8 +328,9 @@
           speakSuccess();
         } catch (e) {
           clearTimeout(progressTimeoutId);
-          const msg = (e && e.message) ? e.message : String(e);
-          setStatus('Błąd zapisu: ' + msg, 'error');
+          var msg = (e && e.message) ? e.message : String(e);
+          if (e && e.cause && e.cause.message) msg += ' — ' + e.cause.message;
+          setStatus('BŁĄD ZAPISU: ' + msg, 'error');
         }
 
         if (timedOut) return;
